@@ -69,6 +69,41 @@ if not check.sufficient:
     print(check.explain())  # also: check.shortfall, check.unlimited
 ```
 
+### Decimals come from the token
+
+Every amount above is an integer of the token's smallest unit. How many of
+those make one token is the token's business: USDT and USDC use 6 decimals,
+DAI and most others 18, WBTC 8. Assuming 18 against a 6-decimal token inflates
+a payout by a factor of a million, so `decimals` is always read and always
+passed explicitly:
+
+```python
+from decimal import Decimal
+
+from erc20_transfers import (
+    TokenAmount,
+    decode_decimals,
+    encode_decimals,
+    from_units,
+    to_units,
+)
+
+decimals = decode_decimals(eth_call(token, encode_decimals()))
+
+amount = to_units(Decimal("1.5"), decimals=decimals)  # 1500000 on USDT
+data = encode_transfer(to=bob, amount=amount)
+
+balance = TokenAmount.from_return_data(
+    eth_call(token, encode_balance_of(account=alice)), decimals=decimals
+)
+print(balance.amount, balance.units)  # 1.500000 1500000
+```
+
+Conversion is exact: amounts are `Decimal`, floats are refused, and
+`to_units(Decimal("1.0000005"), decimals=6)` raises rather than dropping the
+digit the token cannot hold. `from_units` goes the other way for a value read
+off the chain.
+
 ### `.call()` is a simulation
 
 `eth_call` — `.call()` in web3.py — runs a function against a local copy of
