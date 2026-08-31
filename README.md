@@ -104,6 +104,39 @@ Conversion is exact: amounts are `Decimal`, floats are refused, and
 digit the token cannot hold. `from_units` goes the other way for a value read
 off the chain.
 
+### Gas is priced by the chain, not by a constant
+
+Since London a transaction names `maxFeePerGas` and `maxPriorityFeePerGas`
+rather than one `gasPrice`. The base fee in between is set by the protocol,
+burned, moves by up to 1/8 per block, and is refunded above what the block
+charged — so both numbers are read from recent blocks and bounded by a ceiling
+you choose:
+
+```python
+from erc20_transfers import estimate_fees, gwei, priority_fee_from_history
+
+history = eth_fee_history(10, "latest", [50])  # ten blocks, median tip
+
+fees = estimate_fees(
+    base_fee_per_gas=history["baseFeePerGas"][-1],  # what the next block charges
+    priority_fee_per_gas=priority_fee_from_history(
+        [block[0] for block in history["reward"]]
+    ),
+    max_fee_ceiling=gwei(60),
+)
+
+tx = {"to": token, "data": data, **fees.as_transaction_fields()}
+print(fees.explain())
+# base fee 24.31 gwei, paying up to 31.87 gwei with a 1.1 gwei tip
+```
+
+`max_fee_ceiling` is required and never exceeded. When it binds, `fees.capped`
+is true and `explain()` says what was given up; when it sits below the base fee
+the next block will charge, `FeeCeilingTooLow` is raised instead of returning
+fees no block would accept. `headroom_blocks` (2 by default) decides how much
+base-fee growth the transaction can outlast while it waits; `base_fee_headroom`
+and `next_base_fee` expose that arithmetic on its own.
+
 ### `.call()` is a simulation
 
 `eth_call` — `.call()` in web3.py — runs a function against a local copy of
