@@ -24,6 +24,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
 [project.urls]
 Homepage = "https://github.com/polycratia/erc20-transfers"
 Issues = "https://github.com/polycratia/erc20-transfers/issues"
@@ -31,3 +34,7 @@ Source = "https://github.com/polycratia/erc20-transfers"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/erc20_transfers"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
