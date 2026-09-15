@@ -21,38 +21,119 @@ cd erc20-transfers
 pip install -e .
 ```
 
-## Usage
+## Moving tokens without losing them
 
-Call data for the two transfer paths and the two reads that guard them:
+A transfer that reverts is the cheap failure: nothing moved, the error says
+why, and the next attempt can be better. The expensive failures are the quiet
+ones. A payout a million times too large because the token counts in six
+decimals and the code assumed eighteen. A `transferFrom` with no allowance
+behind it. A `True` read off a simulation that signed nothing and broadcast
+nothing.
+
+Those three are the sections below. Everything after them — gas, and the tokens
+that do not implement what they claim — is the same habit applied further out:
+read what the chain says, and never stand in for it with a constant.
+
+### The decimals trap
+
+Every amount in this package is an integer of the token's smallest unit. How
+many of those make one token is the token's own business: USDT and USDC use 6
+decimals, DAI and most others 18, WBTC 8, a few none at all. Assuming 18
+against a 6-decimal token scales every amount by 10\*\*12 — the difference
+between paying out 1.5 USDT and paying out 1.5 million of them, in a
+transaction that succeeds and cannot be taken back.
+
+So nothing here has a default. `decimals` is read from the token and passed
+explicitly:
 
 ```python
+from decimal import Decimal
+
 from erc20_transfers import (
-    check_allowance,
-    decode_transfer_result,
-    decode_uint256,
-    encode_allowance,
+    TokenAmount,
+    decode_decimals,
     encode_balance_of,
-    encode_checked_transfer_from,
+    encode_decimals,
     encode_transfer,
+    from_units,
+    to_units,
 )
 
 alice = "0x1111111111111111111111111111111111111111"
 bob = "0x2222222222222222222222222222222222222222"
 
-# Sending your own tokens.
-data = encode_transfer(to=bob, amount=1_500_000)
+decimals = decode_decimals(eth_call(token, encode_decimals()))
 
-# Spending Alice's tokens as Bob: read the allowance, then encode against it.
+amount = to_units(Decimal("1.5"), decimals=decimals)  # 1500000 on USDT
+data = encode_transfer(to=bob, amount=amount)
+
+balance = TokenAmount.from_return_data(
+    eth_call(token, encode_balance_of(account=alice)), decimals=decimals
+)
+print(balance.amount, balance.units)  # 1.500000 1500000
+```
+
+Conversion is exact: amounts are `Decimal`, floats are refused, and
+`to_units(Decimal("1.0000005"), decimals=6)` raises rather than dropping the
+digit the token cannot hold. `from_units` goes the other way for a value read
+off the chain, and `TokenAmount` keeps an on-chain integer together with the
+scale it was read at, so the number is harder to pass on without it.
+
+### The allowance dance
+
+`transfer` moves your own tokens and needs nothing but a balance. `transferFrom`
+moves someone else's, and works only while that someone has approved the
+spender for at least the amount being moved. Miss that and the call reverts
+after the gas has been spent finding out.
+
+Three steps, in order: read the allowance, raise it if it is short, encode the
+transfer against the value you read.
+
+```python
+from erc20_transfers import (
+    check_allowance,
+    decode_uint256,
+    encode_allowance,
+    encode_checked_transfer_from,
+    encode_transfer,
+    plan_approval,
+)
+
 allowance = decode_uint256(eth_call(token, encode_allowance(owner=alice, spender=bob)))
+```
+
+The raise is where the dance comes in. USDT and a handful of others reject an
+`approve` that moves a non-zero allowance straight to another non-zero value —
+the check sits in their source and the transaction reverts. Going through zero
+works on every token and costs one extra transaction, so it is the default:
+
+```python
+plan = plan_approval(spender=bob, current=allowance, required=1_500_000)
+for step in plan.steps:
+    send(token, step.data)  # in order, each waiting for its own receipt
+
+print(plan.explain())
+# two transactions: set the allowance of 400000 to zero, then approve 1500000; ...
+```
+
+`plan.needed` says whether anything has to be sent at all, `plan.resets_first`
+whether the detour is in the plan, and `reset_first=False` skips it for a token
+you know accepts the direct overwrite. `requires_zero_first_allowance(token)`
+reads a short mainnet-only registry: a true answer means the reset is
+mandatory, a false one only means the token is not on the list. Only raising an
+allowance is planned — to lower one, plan for `required=0` and approve the new
+value afterwards.
+
+With the allowance in place, the transfer is encoded against it rather than
+against hope:
+
+```python
 data = encode_checked_transfer_from(
     sender=alice, spender=bob, to=bob, amount=1_500_000, allowance=allowance
 )
-
-balance = decode_uint256(eth_call(token, encode_balance_of(account=alice)))
-ok = decode_transfer_result(eth_call(token, data))
 ```
 
-When the allowance is short, no call data is produced and `InsufficientAllowance`
+When the allowance is short no call data is produced, and `InsufficientAllowance`
 carries the numbers:
 
 ```
@@ -69,42 +150,38 @@ if not check.sufficient:
     print(check.explain())  # also: check.shortfall, check.unlimited
 ```
 
-### Decimals come from the token
-
-Every amount above is an integer of the token's smallest unit. How many of
-those make one token is the token's business: USDT and USDC use 6 decimals,
-DAI and most others 18, WBTC 8. Assuming 18 against a 6-decimal token inflates
-a payout by a factor of a million, so `decimals` is always read and always
-passed explicitly:
+Sending your own tokens skips the whole figure:
 
 ```python
-from decimal import Decimal
-
-from erc20_transfers import (
-    TokenAmount,
-    decode_decimals,
-    encode_decimals,
-    from_units,
-    to_units,
-)
-
-decimals = decode_decimals(eth_call(token, encode_decimals()))
-
-amount = to_units(Decimal("1.5"), decimals=decimals)  # 1500000 on USDT
-data = encode_transfer(to=bob, amount=amount)
-
-balance = TokenAmount.from_return_data(
-    eth_call(token, encode_balance_of(account=alice)), decimals=decimals
-)
-print(balance.amount, balance.units)  # 1.500000 1500000
+data = encode_transfer(to=bob, amount=1_500_000)
 ```
 
-Conversion is exact: amounts are `Decimal`, floats are refused, and
-`to_units(Decimal("1.0000005"), decimals=6)` raises rather than dropping the
-digit the token cannot hold. `from_units` goes the other way for a value read
-off the chain.
+### `.call()` is not a send
 
-### Gas is priced by the chain, not by a constant
+`eth_call` — `.call()` in web3.py — runs a function against a local copy of
+state and hands back what it would have returned. Nothing is signed, nothing
+reaches a mempool, no receipt is produced. A `True` from `transferFrom` under
+`.call()` means "this would work"; it never means "the tokens moved". A revert
+from it means "this will not work", not "a transaction failed".
+
+Use it for the reads that guard a transfer — `allowance`, `balanceOf`,
+`decimals` — and for a dry run of the transfer itself. Moving tokens needs a
+signed transaction and `eth_sendRawTransaction`:
+
+```python
+from erc20_transfers import decode_transfer_result, decode_uint256, encode_balance_of
+
+balance = decode_uint256(eth_call(token, encode_balance_of(account=alice)))
+would_work = decode_transfer_result(eth_call(token, data))  # a rehearsal, not a send
+# ... sign `data` into a transaction and broadcast it; the tokens move there ...
+```
+
+The receipt that comes back is necessary and still not sufficient: a token may
+return `false` without reverting, and the receipt carries status 1 all the same.
+What the transfer itself returned is the last word, and the tokens that make
+that awkward are below.
+
+## Gas is priced by the chain, not by a constant
 
 Since London a transaction names `maxFeePerGas` and `maxPriorityFeePerGas`
 rather than one `gasPrice`. The base fee in between is set by the protocol,
@@ -137,11 +214,11 @@ fees no block would accept. `headroom_blocks` (2 by default) decides how much
 base-fee growth the transaction can outlast while it waits; `base_fee_headroom`
 and `next_base_fee` expose that arithmetic on its own.
 
-### Tokens that do not follow the standard
+## Tokens that do not follow the standard
 
-ERC-20 is an interface, not an enforcement, and three deviations are common
-enough among the most traded tokens that ignoring them is a bug rather than a
-simplification.
+ERC-20 is an interface, not an enforcement. Two deviations remain beyond the
+allowance reset already covered, and both are common enough among the most
+traded tokens that ignoring them is a bug rather than a simplification.
 
 **A transfer that returns nothing.** USDT and its contemporaries were written
 before the `bool` return was settled; they revert on failure and return no data
@@ -187,42 +264,13 @@ Grossing an amount up so the net comes out exact is not offered: inverting a
 fee schedule nobody published is guesswork, and the schedule can change between
 blocks.
 
-**An allowance that must pass through zero.** USDT and a handful of others
-reject an `approve` that moves a non-zero allowance straight to another
-non-zero value — the check sits in their source and the transaction reverts.
-Going through zero works on every token and costs one extra transaction, so it
-is the default:
+## Scope
 
-```python
-from erc20_transfers import plan_approval, requires_zero_first_allowance
-
-plan = plan_approval(spender=bob, current=allowance, required=1_500_000)
-for step in plan.steps:
-    send(token, step.data)  # in order, each waiting for its own receipt
-
-print(plan.explain())
-# two transactions: set the allowance of 400000 to zero, then approve 1500000; ...
-```
-
-`plan.needed` says whether anything has to be sent, `plan.resets_first` whether
-the detour is in the plan, and `reset_first=False` skips it for a token you
-know accepts the direct overwrite. `requires_zero_first_allowance(token)` reads
-a short mainnet-only registry: a true answer means the reset is mandatory, a
-false one only means the token is not on the list. Only raising an allowance is
-planned — to lower one, plan for `required=0` and approve the new value
-afterwards.
-
-### `.call()` is a simulation
-
-`eth_call` — `.call()` in web3.py — runs a function against a local copy of
-state and returns what it would have returned. It signs nothing and broadcasts
-nothing, so a `True` from `transferFrom` under `.call()` means "this would
-work", not "the tokens moved", and a revert from it means "this will not work"
-rather than "a transaction failed". Moving tokens needs a signed transaction
-and `eth_sendRawTransaction`.
-
-Only the minimal ERC-20 interface is encoded, so no ABI file is needed.
-Addresses may be given in any case; EIP-55 checksums are not verified.
+Only the minimal ERC-20 surface is encoded — `transfer`, `transferFrom`,
+`approve`, `allowance`, `balanceOf`, `decimals` — so no ABI file and no parser
+for one is needed. Addresses may be given in any case; EIP-55 checksums are not
+verified, since verifying them needs keccak-256 and the package has no
+dependencies.
 
 ## License
 
