@@ -178,8 +178,37 @@ would_work = decode_transfer_result(eth_call(token, data))  # a rehearsal, not a
 
 The receipt that comes back is necessary and still not sufficient: a token may
 return `false` without reverting, and the receipt carries status 1 all the same.
-What the transfer itself returned is the last word, and the tokens that make
-that awkward are below.
+What the transfer returned is one witness; the log it emitted is the other.
+
+### The log is the proof
+
+A transfer that moves tokens emits `Transfer(address indexed from, address
+indexed to, uint256 value)`, and the receipt carries it. Status 1 says only
+that the transaction executed without reverting; the log says the balances
+changed. A token that returns `false` instead of reverting emits nothing, so a
+missing log is exactly what that quiet failure looks like on-chain:
+
+```python
+from erc20_transfers import confirm_transfers
+
+receipt = eth_get_transaction_receipt(tx_hash)  # once the transaction is mined
+
+events = confirm_transfers(receipt, token=token, to=bob)
+print(events[0].value, events[0].sender)  # 1500000 0x1111...1111
+```
+
+`confirm_transfers` raises `TransactionReverted` on status 0 and `NothingMoved`
+on status 1 with no matching log. The pieces work on their own too:
+`find_transfers(logs, token=..., to=...)` picks the transfers out of a receipt
+that touched several contracts and passes over every other event, and
+`decode_transfer_log(log)` reads one log into a `TransferEvent(token, sender,
+to, value)`. `TRANSFER_TOPIC` is the hash of the event signature, spelled out
+here the way the selectors are. A `Transfer` log with four topics belongs to an
+ERC-721 — the same signature, with the token id indexed where ERC-20 leaves the
+value in the data — so it is refused rather than read as an amount.
+
+The value in the log is what arrived, which is not always what was sent. The
+tokens that make those differ are next.
 
 ## Gas is priced by the chain, not by a constant
 
