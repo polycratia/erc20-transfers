@@ -20,10 +20,14 @@ from erc20_transfers.abi import (
 from erc20_transfers.allowance import (
     UNLIMITED_ALLOWANCE,
     AllowanceCheck,
+    FundsCheck,
     InsufficientAllowance,
+    InsufficientBalance,
     check_allowance,
+    check_funds,
     encode_checked_transfer_from,
     require_allowance,
+    require_funds,
 )
 from erc20_transfers.gas import (
     BASE_FEE_MAX_CHANGE_DENOMINATOR,
@@ -89,8 +93,10 @@ __all__ = [
     "Eip1559Fees",
     "FeeCeilingTooLow",
     "FeeOnTransfer",
+    "FundsCheck",
     "GWEI",
     "InsufficientAllowance",
+    "InsufficientBalance",
     "MAX_DECIMALS",
     "MAX_HEADROOM_BLOCKS",
     "NonBooleanReturn",
@@ -111,6 +117,7 @@ __all__ = [
     "__version__",
     "base_fee_headroom",
     "check_allowance",
+    "check_funds",
     "confirm_transfers",
     "decode_bool",
     "decode_decimals",
@@ -137,6 +144,7 @@ __all__ = [
     "priority_fee_from_history",
     "read_transfer_return",
     "require_allowance",
+    "require_funds",
     "requires_zero_first_allowance",
     "to_units",
 ]

@@ -233,9 +233,15 @@ def test_a_short_allowance_is_explained_with_its_numbers():
 
     with pytest.raises(InsufficientAllowance) as raised:
         encode_checked_transfer_from(
-            sender=ALICE, spender=BOB, to=CAROL, amount=1_500_000, allowance=400_000
+            sender=ALICE,
+            spender=BOB,
+            to=CAROL,
+            amount=1_500_000,
+            allowance=400_000,
+            balance=1_500_000,
         )
-    assert raised.value.check.shortfall == 1_100_000
+    assert raised.value.check.short_side == "allowance"
+    assert raised.value.check.allowance_shortfall == 1_100_000
 
 
 def test_an_unlimited_allowance_covers_anything():

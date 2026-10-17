@@ -15,6 +15,7 @@ from erc20_transfers import (
     FeeCeilingTooLow,
     FeeOnTransfer,
     InsufficientAllowance,
+    InsufficientBalance,
     TokenAmount,
     decode_decimals,
     decode_transfer_result,
@@ -125,6 +126,7 @@ def test_transfer_from_is_refused_before_the_chain_can_revert_it(
             to=accounts.carol,
             amount=10**18,
             allowance=allowance,
+            balance=balance_of(chain, tokens.dai, accounts.alice),
         )
 
     with pytest.raises(Revert):
@@ -133,6 +135,42 @@ def test_transfer_from_is_refused_before_the_chain_can_revert_it(
             sender=accounts.bob,
             data=encode_transfer_from(
                 sender=accounts.alice, to=accounts.carol, amount=10**18
+            ),
+        )
+
+
+def test_an_approved_spender_without_the_tokens_is_refused_on_the_balance(
+    chain, accounts, tokens
+):
+    amount = 10**18
+    plan = plan_approval(
+        spender=accounts.alice,
+        current=allowance_of(chain, tokens.dai, accounts.bob, accounts.alice),
+        required=amount,
+    )
+    for step in plan.steps:
+        chain.send(to=tokens.dai, sender=accounts.bob, data=step.data)
+
+    allowance = allowance_of(chain, tokens.dai, accounts.bob, accounts.alice)
+    assert allowance == amount
+    assert balance_of(chain, tokens.dai, accounts.bob) == 0
+
+    with pytest.raises(InsufficientBalance):
+        encode_checked_transfer_from(
+            sender=accounts.bob,
+            spender=accounts.alice,
+            to=accounts.carol,
+            amount=amount,
+            allowance=allowance,
+            balance=balance_of(chain, tokens.dai, accounts.bob),
+        )
+
+    with pytest.raises(Revert):
+        chain.send(
+            to=tokens.dai,
+            sender=accounts.alice,
+            data=encode_transfer_from(
+                sender=accounts.bob, to=accounts.carol, amount=amount
             ),
         )
 
@@ -158,6 +196,7 @@ def test_an_approved_spender_moves_the_owners_tokens(chain, accounts, tokens):
         to=accounts.carol,
         amount=amount,
         allowance=allowance,
+        balance=balance_of(chain, tokens.dai, accounts.alice),
     )
     receipt = chain.send(to=tokens.dai, sender=accounts.bob, data=data)
 
