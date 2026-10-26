@@ -86,20 +86,22 @@ moves someone else's, and works only while that someone has approved the
 spender for at least the amount being moved. Miss that and the call reverts
 after the gas has been spent finding out.
 
-Three steps, in order: read the allowance, raise it if it is short, encode the
-transfer against the value you read.
+Four steps, in order: read the allowance and the owner's balance, raise the
+allowance if it is short, encode the transfer against the values you read.
 
 ```python
 from erc20_transfers import (
-    check_allowance,
+    check_funds,
     decode_uint256,
     encode_allowance,
+    encode_balance_of,
     encode_checked_transfer_from,
     encode_transfer,
     plan_approval,
 )
 
 allowance = decode_uint256(eth_call(token, encode_allowance(owner=alice, spender=bob)))
+balance = decode_uint256(eth_call(token, encode_balance_of(account=alice)))
 ```
 
 The raise is where the dance comes in. USDT and a handful of others reject an
@@ -124,31 +126,64 @@ mandatory, a false one only means the token is not on the list. Only raising an
 allowance is planned — to lower one, plan for `required=0` and approve the new
 value afterwards.
 
-With the allowance in place, the transfer is encoded against it rather than
+With both numbers in hand, the transfer is encoded against them rather than
 against hope:
 
 ```python
 data = encode_checked_transfer_from(
-    sender=alice, spender=bob, to=bob, amount=1_500_000, allowance=allowance
+    sender=alice,
+    spender=bob,
+    to=bob,
+    amount=1_500_000,
+    allowance=allowance,
+    balance=balance,
 )
 ```
 
-When the allowance is short no call data is produced, and `InsufficientAllowance`
-carries the numbers:
+### Two reverts that look alike
+
+`transferFrom` needs two things at once: an allowance large enough for the
+amount, and an owner whose balance actually holds it. Short on either and the
+call reverts — the same failed transaction, the same spent gas, and a revert
+string that depends on the token. Told apart before anything is sent they point
+at different fixes: a short allowance is one `approve` away, a short balance is
+tokens that are not there and no approval conjures them.
+
+So no call data is produced when either side falls short, and the exception
+names the side. `InsufficientAllowance` carries the allowance numbers:
 
 ```
-0x2222...2222 holds an allowance of 400000 from 0x1111...1111, but transferFrom
-of 1500000 needs 1100000 more; the call reverts until the owner approves at
-least 1500000
+0x2222...2222 holds 1500000, enough for 1500000, but 0x1111...1111 holds an
+allowance of 400000 and needs 1100000 more; transferFrom reverts on the
+allowance, not on the balance
 ```
+
+and `InsufficientBalance` the other side:
+
+```
+0x2222...2222 holds an allowance of 1500000 from 0x1111...1111, enough for
+1500000, but 0x1111...1111 holds only 400000 and needs 1100000 more;
+transferFrom reverts on the balance, not on the allowance
+```
+
+The two are separate types, neither a subclass of the other. When both sides
+are short, `InsufficientBalance` is raised first: it is the one an `approve`
+cannot fix.
 
 To branch instead of raising, ask first:
 
 ```python
-check = check_allowance(owner=alice, spender=bob, required=1_500_000, current=allowance)
+check = check_funds(
+    owner=alice, spender=bob, required=1_500_000, allowance=allowance, balance=balance
+)
 if not check.sufficient:
-    print(check.explain())  # also: check.shortfall, check.unlimited
+    print(check.short_side)  # "allowance", "balance" or "both"
+    print(check.explain())   # also: allowance_shortfall, balance_shortfall
 ```
+
+`require_funds` is the same check that raises, and `check.allowance_check` is
+the allowance side on its own — a `check_allowance` result, for the places where
+the balance is somebody else's problem.
 
 Sending your own tokens skips the whole figure:
 
