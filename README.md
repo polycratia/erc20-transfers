@@ -278,6 +278,42 @@ fees no block would accept. `headroom_blocks` (2 by default) decides how much
 base-fee growth the transaction can outlast while it waits; `base_fee_headroom`
 and `next_base_fee` expose that arithmetic on its own.
 
+### The transaction it travels in
+
+Two priced fields are not a transaction. The rest of it says which chain the
+signature is good for, which nonce it spends, how much gas it may burn, and —
+for a token call — that it carries no ether:
+
+```python
+from erc20_transfers import build_token_transaction, gas_with_margin
+
+transaction = build_token_transaction(
+    chain_id=1,
+    nonce=eth_get_transaction_count(alice, "pending"),
+    token=token,
+    data=data,
+    fees=fees,
+    gas_limit=gas_with_margin(eth_estimate_gas({"to": token, "data": data})),
+)
+# {'type': 2, 'chainId': 1, 'nonce': 7, 'to': '0xdac1...', 'value': 0, ...}
+```
+
+`value` is not an argument and is always 0: a token balance is a number in the
+contract's storage, so nothing about the transfer depends on the ether the
+transaction carries, and ether sent along with it is at best stuck in a
+contract that never looks at it. `chain_id` is required for the opposite
+reason — it is signed into the transaction, and leaving it out makes the
+signature good on every chain the sender has that nonce on.
+
+`data` has to be a `transfer`, `transferFrom` or `approve` of the length that
+call takes, or `ForeignCallData` is raised: a transaction assembled here is one
+that moves tokens, not one that happens to be addressed to a token.
+`gas_with_margin` raises an `eth_estimateGas` result by 2500 basis points by
+default — the estimate is measured against current state, and a transfer that
+writes a recipient's balance slot from zero pays for a slot the estimate may
+not have seen. Unused gas is refunded; running out is a transaction that pays
+for every opcode it ran and moves nothing.
+
 ## Tokens that do not follow the standard
 
 ERC-20 is an interface, not an enforcement. Two deviations remain beyond the
