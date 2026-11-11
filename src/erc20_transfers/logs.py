@@ -61,16 +61,34 @@ class TransactionReverted(RuntimeError):
 
 
 class NothingMoved(RuntimeError):
-    """Raised for a receipt that succeeded without emitting the transfer."""
+    """Raised for a receipt that succeeded without emitting the transfer.
 
-    def __init__(self, *, token: str, to: str) -> None:
-        super().__init__(
+    `tokens` holds the distinct contracts whose ERC-20 `Transfer` logs the
+    receipt did carry, in the order they first appear. Empty means the
+    transaction logged no transfer at all, which is what a token returning
+    `false` leaves behind; an address other than `token` means tokens moved,
+    just not the ones being confirmed.
+    """
+
+    def __init__(self, *, token: str, to: str, tokens: Sequence[str] = ()) -> None:
+        found = tuple(dict.fromkeys(tokens))
+        message = (
             f"the transaction carries status 1 but no Transfer log in it credited "
             f"{to} in {token}; a token that returns false without reverting looks "
             f"exactly like this, so the tokens did not move"
         )
+        if found:
+            message += (
+                f"; the Transfer logs the receipt does carry come from "
+                f"{', '.join(found)}"
+            )
+        else:
+            message += "; the receipt carries no Transfer log at all"
+
+        super().__init__(message)
         self.token = token
         self.to = to
+        self.tokens = found
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,9 +269,11 @@ def confirm_transfers(
     Status 0 raises `TransactionReverted`: the call failed and nothing moved.
     Status 1 with no matching log raises `NothingMoved`, which is what a token
     returning `false` without reverting leaves behind - a successful receipt
-    over balances that did not change. Everything else comes back as the logs
-    that credited `to`, usually one, more when a transaction pays a recipient
-    in several steps.
+    over balances that did not change. That exception carries the distinct
+    tokens whose transfers the receipt did log in `tokens`, which separates a
+    receipt that moved nothing from one that moved something else.
+    Everything else comes back as the logs that credited `to`, usually one,
+    more when a transaction pays a recipient in several steps.
     """
     status = _status(receipt)
     address = normalize_address(token)
@@ -268,6 +288,12 @@ def confirm_transfers(
 
     events = find_transfers(receipt["logs"], token=address, to=recipient)
     if not events:
-        raise NothingMoved(token=address, to=recipient)
+        raise NothingMoved(
+            token=address,
+            to=recipient,
+            tokens=[
+                event.token for event in find_transfers(receipt["logs"])
+            ],
+        )
 
     return events

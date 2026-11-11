@@ -233,7 +233,13 @@ print(events[0].value, events[0].sender)  # 1500000 0x1111...1111
 ```
 
 `confirm_transfers` raises `TransactionReverted` on status 0 and `NothingMoved`
-on status 1 with no matching log. The pieces work on their own too:
+on status 1 with no matching log. `NothingMoved.tokens` holds the distinct
+contracts whose `Transfer` logs the receipt did carry: empty when the
+transaction logged no transfer at all, which is what a `false` return looks
+like, and some other address when tokens moved but not the ones being
+confirmed — a transfer sent to the wrong contract reads that way.
+
+The pieces work on their own too:
 `find_transfers(logs, token=..., to=...)` picks the transfers out of a receipt
 that touched several contracts and passes over every other event, and
 `decode_transfer_log(log)` reads one log into a `TransferEvent(token, sender,

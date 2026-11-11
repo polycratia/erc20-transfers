@@ -168,7 +168,9 @@ def test_status_one_without_a_log_is_how_a_false_return_looks():
 
     assert raised.value.token == DAI_LOWER
     assert raised.value.to == BOB
+    assert raised.value.tokens == ()
     assert "status 1" in str(raised.value)
+    assert "no Transfer log at all" in str(raised.value)
 
 
 def test_a_transfer_to_someone_else_does_not_confirm_this_one():
@@ -176,6 +178,25 @@ def test_a_transfer_to_someone_else_does_not_confirm_this_one():
 
     with pytest.raises(NothingMoved):
         confirm_transfers(receipt, token=DAI, to=BOB)
+
+
+def test_nothing_moved_names_the_tokens_the_receipt_did_log():
+    receipt = {
+        "status": 1,
+        "logs": [
+            approval_log(),
+            transfer_log(token=USDT, to=CAROL, value=1),
+            transfer_log(token=DAI, sender=CAROL, to=CAROL, value=2),
+            transfer_log(token=USDT, to=FEE_COLLECTOR, value=3),
+            nft_transfer_log(),
+        ],
+    }
+
+    with pytest.raises(NothingMoved) as raised:
+        confirm_transfers(receipt, token=DAI, to=BOB)
+
+    assert raised.value.tokens == (USDT_LOWER, DAI_LOWER)
+    assert USDT_LOWER in str(raised.value)
 
 
 def test_a_confirmed_transfer_carries_its_numbers():
